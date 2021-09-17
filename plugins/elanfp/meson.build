@@ -8,6 +8,7 @@ shared_module('fu_plugin_elanfp',
   fu_hash,
   sources : [
     'fu-plugin-elanfp.c',
+    'fu-elanfp-common.c',
     'fu-elanfp-device.c',
     'fu-elanfp-firmware.c'  # fuzzing
   ],

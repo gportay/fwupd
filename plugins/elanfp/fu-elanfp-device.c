@@ -6,6 +6,7 @@
 
 #include "config.h"
 
+#include "fu-elanfp-common.h"
 #include "fu-elanfp-device.h"
 #include "fu-elanfp-firmware.h"
 
@@ -18,32 +19,6 @@
 #define CTRL_SEND_TIMEOUT_MS		 3000
 #define BULK_SEND_TIMEOUT_MS		 1000
 #define BULK_RECV_TIMEOUT_MS		 1000
-#define ELANFP_FLASH_TRANSFER_BLOCK_SIZE 1024
-
-#define PROTOCOL_VERSION_2 0x02
-#define PROTOCOL_VERSION_4 0x04
-
-#define FIRMWARE_UPDATE_OFFER_SKIP   0x00
-#define FIRMWARE_UPDATE_OFFER_ACCEPT 0x01
-#define FIRMWARE_UPDATE_OFFER_REJECT 0x02
-
-#define FIRMWARE_UPDATE_FLAG_FIRST_BLOCK 0x80
-#define FIRMWARE_UPDATE_FLAG_LAST_BLOCK	 0x40
-
-#define STA_REJECT_OLD_FIRMWARE	      0x00
-#define STA_REJECT_SWAP_PENDING	      0x02
-#define STA_REJECT_WRONG_BANK	      0x04
-#define STA_REJECT_SIGN_RULE	      0xE0
-#define STA_REJECT_VER_RELEASE_DEBUG  0xE1
-#define STA_REJECT_DEBUG_SAME_VERSION 0xE2
-
-#define FIRMWARE_UPDATE_SUCCESS		   0x00
-#define FIRMWARE_UPDATE_ERROR_WRITE	   0x02
-#define FIRMWARE_UPDATE_ERROR_VERIFY	   0x04
-#define FIRMWARE_UPDATE_ERROR_SIGNATURE	   0x06
-#define FIRMWARE_UPDATE_ERROR_INVALID_ADDR 0x09
-#define FIRMWARE_UPDATE_ERROR_NO_OFFER	   0x0A
-#define FIRMWARE_UPDATE_ERROR_INVALID	   0x0B
 
 #define REPORT_ID_FW_VERSION_FEATURE 0x20
 #define REPORT_ID_OFFER_COMMAND	     0x25
@@ -70,98 +45,6 @@ fu_elanfp_device_prepare_firmware(FuDevice *device,
 	if (!fu_firmware_parse(firmware, fw, flags, error))
 		return NULL;
 	return g_steal_pointer(&firmware);
-}
-
-static gboolean
-iap_send_command(GUsbDevice *usb_device,
-		 guint8 reqType,
-		 guint8 request,
-		 guint8 *pbuff,
-		 gsize len,
-		 GError **error)
-{
-	gsize actual = 0;
-
-	if (pbuff == NULL) {
-		g_prefix_error(error, "send command - buffer is null: ");
-		return FALSE;
-	}
-
-	if (len == 0) {
-		g_prefix_error(error, "send command - buffer length is zero: ");
-		return FALSE;
-	}
-
-	if (!g_usb_device_control_transfer(usb_device,
-					   G_USB_DEVICE_DIRECTION_HOST_TO_DEVICE,
-					   G_USB_DEVICE_REQUEST_TYPE_VENDOR,
-					   G_USB_DEVICE_RECIPIENT_INTERFACE,
-					   request, // request
-					   0x00,    // value
-					   0x00,    // index
-					   pbuff,
-					   len,
-					   &actual,
-					   CTRL_SEND_TIMEOUT_MS,
-					   NULL,
-					   error)) {
-		g_prefix_error(error, "send command - failed to send command: ");
-		return FALSE;
-	}
-
-	if (actual != len) {
-		g_set_error(error,
-			    FWUPD_ERROR,
-			    FWUPD_ERROR_INTERNAL,
-			    "send length (%d) is not match with the request (%d)",
-			    (gint32)actual,
-			    (gint32)len);
-
-		return FALSE;
-	}
-
-	return TRUE;
-}
-
-static gboolean
-iap_recv_status(GUsbDevice *usb_device, guint8 *pbuff, gsize len, GError **error)
-{
-	gsize actual = 0;
-
-	if (pbuff == NULL) {
-		g_prefix_error(error, "received status - buffer is null: ");
-		return FALSE;
-	}
-
-	if (len == 0) {
-		g_prefix_error(error, "received status - buffer length is zero: ");
-		return FALSE;
-	}
-
-	if (!g_usb_device_bulk_transfer(usb_device,
-					ELAN_EP_CMD_IN,
-					pbuff,
-					len,
-					&actual,
-					BULK_RECV_TIMEOUT_MS,
-					NULL,
-					error)) {
-		g_prefix_error(error, "received status - failed to received status: ");
-		return FALSE;
-	}
-
-	if (actual != len) {
-		g_set_error(error,
-			    FWUPD_ERROR,
-			    FWUPD_ERROR_INTERNAL,
-			    "received length (%d) is not match with the request (%d)",
-			    (gint32)actual,
-			    (gint32)len);
-
-		return FALSE;
-	}
-
-	return TRUE;
 }
 
 static gboolean
@@ -200,6 +83,89 @@ fu_elanfp_device_close(FuDevice *device, GError **error)
 
 	/* FuUsbDevice->close */
 	return FU_DEVICE_CLASS(fu_elanfp_device_parent_class)->close(device, error);
+}
+
+static gboolean
+fu_elanfp_iap_send_command(FuElanfpDevice *self,
+			   guint8 request_type,
+			   guint8 request,
+			   const guint8 *buf,
+			   gsize bufsz,
+			   GError **error)
+{
+	GUsbDevice *usb_device = fu_usb_device_get_dev(FU_USB_DEVICE(self));
+	gsize actual = 0;
+	guint8 buftmp[61] = {request_type, 0};
+
+	if (buf != NULL) {
+		if (!fu_memcpy_safe(buftmp,
+				    sizeof(buftmp),
+				    0x1, /* dst */
+				    buf,
+				    bufsz,
+				    0x0, /* src */
+				    bufsz,
+				    error))
+			return FALSE;
+	}
+	if (!g_usb_device_control_transfer(usb_device,
+					   G_USB_DEVICE_DIRECTION_HOST_TO_DEVICE,
+					   G_USB_DEVICE_REQUEST_TYPE_VENDOR,
+					   G_USB_DEVICE_RECIPIENT_INTERFACE,
+					   request, /* request */
+					   0x00,    /* value */
+					   0x00,    /* index */
+					   buftmp,
+					   bufsz + 1,
+					   &actual,
+					   CTRL_SEND_TIMEOUT_MS,
+					   NULL,
+					   error)) {
+		g_prefix_error(error, "failed to send command: ");
+		return FALSE;
+	}
+	if (actual != bufsz + 1) {
+		g_set_error(error,
+			    FWUPD_ERROR,
+			    FWUPD_ERROR_INTERNAL,
+			    "send length (%u) is not match with the request (%u)",
+			    (guint)actual,
+			    (guint)bufsz + 1);
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
+static gboolean
+fu_elanfp_iap_recv_status(FuElanfpDevice *self, guint8 *buf, gsize bufsz, GError **error)
+{
+	GUsbDevice *usb_device = fu_usb_device_get_dev(FU_USB_DEVICE(self));
+	gsize actual = 0;
+
+	if (!g_usb_device_bulk_transfer(usb_device,
+					ELAN_EP_CMD_IN,
+					buf,
+					bufsz,
+					&actual,
+					BULK_RECV_TIMEOUT_MS,
+					NULL,
+					error)) {
+		g_prefix_error(error, "failed to receive status: ");
+		return FALSE;
+	}
+	if (actual != bufsz) {
+		g_set_error(error,
+			    FWUPD_ERROR,
+			    FWUPD_ERROR_INTERNAL,
+			    "received length (%u) is not match with the request (%u)",
+			    (guint)actual,
+			    (guint)bufsz);
+
+		return FALSE;
+	}
+
+	return TRUE;
 }
 
 static gboolean
@@ -272,30 +238,137 @@ static gboolean
 fu_elanfp_device_setup(FuDevice *device, GError **error)
 {
 	FuElanfpDevice *self = FU_ELANFP_DEVICE(device);
-	const gchar *fw_ver_str = NULL;
 	guint16 fw_ver;
 	guint8 usb_buf[2] = {0x40, 0x19};
-	gsize actual_len = 0;
+	g_autofree gchar *fw_ver_str = NULL;
 
+	/* get version */
 	if (!fu_elanfp_device_do_xfer(self,
 				      (guint8 *)&usb_buf,
 				      sizeof(usb_buf),
 				      usb_buf,
 				      sizeof(usb_buf),
 				      TRUE,
-				      &actual_len,
+				      NULL,
 				      error)) {
 		g_prefix_error(error, "failed to device setup: ");
 		return FALSE;
 	}
-
 	fw_ver = fu_common_read_uint16(usb_buf, G_BIG_ENDIAN);
-
 	fw_ver_str = g_strdup_printf("%04x", fw_ver);
-
-	g_debug("fw version %04x", fw_ver);
-
 	fu_device_set_version(device, fw_ver_str);
+
+	/* success */
+	return TRUE;
+}
+
+static gboolean
+fu_elanfp_device_write_payload(FuElanfpDevice *self,
+			       GBytes *fw,
+			       FuProgress *progress,
+			       GError **error)
+{
+	guint32 offset = 0;
+	gsize bufsz = 0;
+	const guint8 *buf = g_bytes_get_data(fw, &bufsz);
+	g_autoptr(GPtrArray) chunks = NULL;
+
+	/* process into chunks */
+	chunks = g_ptr_array_new_with_free_func((GDestroyNotify)g_object_unref);
+	while (offset < bufsz) {
+		guint32 chunk_addr = 0;
+		guint8 chunk_size = 0;
+		g_autoptr(FuChunk) chk = NULL;
+		g_autoptr(GBytes) blob = NULL;
+
+		/* read chunk header */
+		if (!fu_common_read_uint32_safe(buf,
+						bufsz,
+						offset,
+						&chunk_addr,
+						G_LITTLE_ENDIAN,
+						error))
+			return FALSE;
+		if (!fu_common_read_uint8_safe(buf, bufsz, offset + 0x4, &chunk_size, error))
+			return FALSE;
+		offset += 0x5;
+		blob = fu_common_bytes_new_offset(fw, offset, chunk_size, error);
+		if (blob == NULL) {
+			g_prefix_error(error, "memory copy for offer fail: ");
+			return FALSE;
+		}
+		chk = fu_chunk_bytes_new(blob);
+		fu_chunk_set_address(chk, chunk_addr);
+		g_ptr_array_add(chunks, g_steal_pointer(&chk));
+
+		/* next! */
+		offset += chunk_size;
+	}
+
+	/* write each chunk */
+	fu_progress_set_id(progress, G_STRLOC);
+	fu_progress_set_steps(progress, chunks->len);
+	for (guint i = 0; i < chunks->len; i++) {
+		FuChunk *chk = g_ptr_array_index(chunks, i);
+		guint8 databuf[61] = {0};
+		guint8 recvbuf[17] = {0};
+
+		/* write into buffer */
+		if (i == 0)
+			databuf[0] = FU_CFU_DEVICE_FLAG_FIRST_BLOCK;
+		else if (i == chunks->len - 1)
+			databuf[0] = FU_CFU_DEVICE_FLAG_LAST_BLOCK;
+		databuf[1] = fu_chunk_get_data_sz(chk);
+		if (!fu_common_write_uint16_safe(databuf,
+						 sizeof(databuf),
+						 0x2,
+						 i + 1,
+						 G_LITTLE_ENDIAN,
+						 error))
+			return FALSE;
+		if (!fu_common_write_uint32_safe(databuf,
+						 sizeof(databuf),
+						 0x4,
+						 fu_chunk_get_address(chk),
+						 G_LITTLE_ENDIAN,
+						 error))
+			return FALSE;
+
+		if (!fu_memcpy_safe(databuf,
+				    sizeof(databuf),
+				    0x8, /* dst */
+				    fu_chunk_get_data(chk),
+				    fu_chunk_get_data_sz(chk),
+				    0x0, /* src */
+				    fu_chunk_get_data_sz(chk),
+				    error)) {
+			g_prefix_error(error, "memory copy for payload fail: ");
+			return FALSE;
+		}
+		if (!fu_elanfp_iap_send_command(self,
+						REQTYPE_COMMAND,
+						REPORT_ID_PAYLOAD_COMMAND,
+						databuf,
+						sizeof(databuf),
+						error)) {
+			g_prefix_error(error, "send payload command fail: ");
+			return FALSE;
+		}
+		if (!fu_elanfp_iap_recv_status(self, recvbuf, sizeof(recvbuf), error)) {
+			g_prefix_error(error, "received payload status fail: ");
+			return FALSE;
+		}
+		if (recvbuf[5] != FU_CFU_DEVICE_STATUS_SUCCESS) {
+			g_set_error(error,
+				    G_IO_ERROR,
+				    G_IO_ERROR_INVALID_DATA,
+				    "failed to send chunk %u: %s",
+				    i + 1,
+				    fu_elanfp_cfu_device_status_to_string(recvbuf[5]));
+			return FALSE;
+		}
+		fu_progress_step_done(progress);
+	}
 
 	/* success */
 	return TRUE;
@@ -309,268 +382,66 @@ fu_elanfp_device_write_firmware(FuDevice *device,
 				GError **error)
 {
 	FuElanfpDevice *self = FU_ELANFP_DEVICE(device);
-	S2F_FILE s2f_file;
-	PAYLOAD_HEADER *ppayload_header = NULL;
-	guint8 databuf[61] = {0};
-	guint8 recvbuf[17] = {0};
-	guint32 payload_header_length = 5;
-	guint16 pkg_index = 0;
-	guint32 payload_offset = 0;
-	GUsbDevice *usb_device = fu_usb_device_get_dev(FU_USB_DEVICE(self));
-	g_autoptr(GBytes) fw = NULL;
-	g_autoptr(GBytes) fw_offer_a = NULL;
-	g_autoptr(GBytes) fw_offer_b = NULL;
-	g_autoptr(GBytes) fw_payload_a = NULL;
-	g_autoptr(GBytes) fw_payload_b = NULL;
-	g_autoptr(GPtrArray) chunks = NULL;
+	guint i;
+	struct {
+		const gchar *tag;
+		guint8 offer_idx;
+		guint8 payload_idx;
+	} items[] = {{"A", 0x72, 0x74}, {"B", 0x73, 0x75}, {NULL, 0x0, 0x0}};
+	g_autoptr(GBytes) payload = NULL;
 
 	/* progress */
 	fu_progress_set_id(progress, G_STRLOC);
 	fu_progress_add_flag(progress, FU_PROGRESS_FLAG_GUESSED);
-	fu_progress_add_step(progress, FWUPD_STATUS_DEVICE_WRITE, 100);
+	fu_progress_add_step(progress, FWUPD_STATUS_DEVICE_BUSY, 2);   /* offer */
+	fu_progress_add_step(progress, FWUPD_STATUS_DEVICE_WRITE, 98); /* payload */
 
-	fw_offer_a = fu_firmware_get_image_by_id_bytes(firmware, FW_SET_ID_OFFER_A, error);
-	if (fw_offer_a == NULL)
-		return FALSE;
-	fw_offer_b = fu_firmware_get_image_by_id_bytes(firmware, FW_SET_ID_OFFER_B, error);
-	if (fw_offer_b == NULL)
-		return FALSE;
-	fw_payload_a = fu_firmware_get_image_by_id_bytes(firmware, FW_SET_ID_PAYLOAD_A, error);
-	if (fw_payload_a == NULL)
-		return FALSE;
-	fw_payload_b = fu_firmware_get_image_by_id_bytes(firmware, FW_SET_ID_PAYLOAD_B, error);
-	if (fw_payload_b == NULL)
-		return FALSE;
+	/* send offers */
+	for (i = 0; items[i].tag != NULL; i++) {
+		g_autoptr(GBytes) offer = NULL;
+		guint8 recvbuf[17] = {0};
 
-	s2f_file.pOffer[0] = g_bytes_get_data(fw_offer_a, &s2f_file.OfferLength[0]);
-	s2f_file.pOffer[1] = g_bytes_get_data(fw_offer_b, &s2f_file.OfferLength[1]);
-	s2f_file.pPayload[0] = g_bytes_get_data(fw_payload_a, &s2f_file.PayloadLength[0]);
-	s2f_file.pPayload[1] = g_bytes_get_data(fw_payload_b, &s2f_file.PayloadLength[1]);
-
-	s2f_file.Tag[0][0] = 0x41;
-	s2f_file.Tag[0][1] = 0x00;
-	s2f_file.Tag[1][0] = 0x42;
-	s2f_file.Tag[1][1] = 0x00;
-
-	/* send offer */
-	for (guint i = 0; i < 2; i++) {
-		memset(databuf, 0x00, sizeof(databuf));
-		memset(recvbuf, 0x00, sizeof(recvbuf));
-		databuf[0] = REPORT_ID_OFFER_COMMAND;
-
-		if (!fu_memcpy_safe(databuf,
-				    sizeof(databuf),
-				    1,
-				    s2f_file.pOffer[i],
-				    s2f_file.OfferLength[i],
-				    0,
-				    s2f_file.OfferLength[i],
-				    error)) {
-			g_prefix_error(error,
-				       "run iap process - memory copy for offer %s fail: ",
-				       s2f_file.Tag[i]);
+		offer = fu_firmware_get_image_by_idx_bytes(firmware, items[i].offer_idx, error);
+		if (offer == NULL)
+			return FALSE;
+		if (!fu_elanfp_iap_send_command(self,
+						REQTYPE_COMMAND,
+						REPORT_ID_OFFER_COMMAND,
+						g_bytes_get_data(offer, NULL),
+						g_bytes_get_size(offer),
+						error)) {
+			g_prefix_error(error, "send offer command fail: ");
 			return FALSE;
 		}
-
-		g_debug("send offer start");
-
-		if (!iap_send_command(usb_device,
-				      REQTYPE_COMMAND,
-				      REPORT_ID_OFFER_COMMAND,
-				      databuf,
-				      s2f_file.OfferLength[i] + 1,
-				      error)) {
-			g_prefix_error(error, "run iap process - send offer command fail: ");
+		if (!fu_elanfp_iap_recv_status(self, recvbuf, sizeof(recvbuf), error)) {
+			g_prefix_error(error, "received offer status fail: ");
 			return FALSE;
 		}
-
-		if (!iap_recv_status(usb_device, recvbuf, s2f_file.OfferLength[i] + 1, error)) {
-			g_prefix_error(error, "run iap process - received offer status fail: ");
-			return FALSE;
-		}
-
-		if (recvbuf[13] == FIRMWARE_UPDATE_OFFER_ACCEPT) {
-			/* Payload */
-			g_debug("run iap - Offer %s Accepted", s2f_file.Tag[i]);
-
-			pkg_index = 1;
-			payload_offset = 0;
-			while (payload_offset < s2f_file.PayloadLength[i]) {
-				memset(databuf, 0x00, sizeof(databuf));
-				memset(recvbuf, 0x00, sizeof(recvbuf));
-
-				ppayload_header =
-				    (PAYLOAD_HEADER *)(s2f_file.pPayload[i] + payload_offset);
-
-				databuf[0] = REPORT_ID_PAYLOAD_COMMAND;
-				databuf[1] =
-				    (pkg_index == 1)
-					? FIRMWARE_UPDATE_FLAG_FIRST_BLOCK
-					: ((payload_offset + payload_header_length +
-					    ppayload_header->Length) >= s2f_file.PayloadLength[i]
-					       ? FIRMWARE_UPDATE_FLAG_LAST_BLOCK
-					       : 0x00);
-				databuf[2] = ppayload_header->Length;
-
-				if (!fu_common_write_uint16_safe(databuf,
-								 sizeof(databuf),
-								 3,
-								 pkg_index,
-								 G_LITTLE_ENDIAN,
-								 error)) {
-					g_prefix_error(error,
-						       "run iap process - assign pkg index info to "
-						       "buffer for offer %s fail: ",
-						       s2f_file.Tag[i]);
-					return FALSE;
-				}
-
-				if (!fu_common_write_uint32_safe(databuf,
-								 sizeof(databuf),
-								 5,
-								 ppayload_header->Address,
-								 G_LITTLE_ENDIAN,
-								 error)) {
-					g_prefix_error(error,
-						       "run iap process - assign address info to "
-						       "buffer for offer %s fail: ",
-						       s2f_file.Tag[i]);
-					return FALSE;
-				}
-
-				if (!fu_memcpy_safe(databuf,
-						    sizeof(databuf),
-						    9,
-						    s2f_file.pPayload[i],
-						    s2f_file.PayloadLength[i],
-						    payload_offset + payload_header_length,
-						    databuf[2],
-						    error)) {
-					g_prefix_error(
-					    error,
-					    "run iap process - memory copy for offer %s fail: ",
-					    s2f_file.Tag[i]);
-					return FALSE;
-				}
-
-				if (!iap_send_command(usb_device,
-						      REQTYPE_COMMAND,
-						      REPORT_ID_PAYLOAD_COMMAND,
-						      databuf,
-						      sizeof(databuf),
-						      error)) {
-					g_prefix_error(
-					    error,
-					    "run iap process - send payload command fail: ");
-					return FALSE;
-				}
-
-				if (!iap_recv_status(usb_device, recvbuf, sizeof(recvbuf), error)) {
-					g_prefix_error(
-					    error,
-					    "run iap process - received payload status fail: ");
-					return FALSE;
-				}
-
-				if (recvbuf[5] == FIRMWARE_UPDATE_SUCCESS) {
-					if (databuf[1] == FIRMWARE_UPDATE_FLAG_LAST_BLOCK) {
-						fu_progress_set_percentage_full(
-						    fu_progress_get_child(progress),
-						    (gsize)payload_offset +
-							(payload_header_length + databuf[2]),
-						    (gsize)s2f_file.PayloadLength[i]);
-
-						g_debug("run iap - iap bank-%s update completely, "
-							"wait device "
-							"reset !",
-							s2f_file.Tag[i]);
-
-					} else {
-						fu_progress_set_percentage_full(
-						    fu_progress_get_child(progress),
-						    (gsize)payload_offset,
-						    (gsize)s2f_file.PayloadLength[i]);
-					}
-				} else {
-					if (recvbuf[5] == FIRMWARE_UPDATE_ERROR_WRITE)
-						g_debug("run iap - payload %s : write fail, "
-							"sequence no : "
-							"0x%08X",
-							s2f_file.Tag[i],
-							*(guint32 *)(recvbuf + 1));
-					else if (recvbuf[5] == FIRMWARE_UPDATE_ERROR_VERIFY)
-						g_debug("run iap - payload %s : verify fail, "
-							"sequence no : "
-							"0x%08X",
-							s2f_file.Tag[i],
-							*(guint32 *)(recvbuf + 1));
-					else if (recvbuf[5] == FIRMWARE_UPDATE_ERROR_SIGNATURE)
-						g_debug("run iap - payload %s : signature error, "
-							"sequence no : "
-							"0x%08X",
-							s2f_file.Tag[i],
-							*(guint32 *)(recvbuf + 1));
-					else if (recvbuf[5] == FIRMWARE_UPDATE_ERROR_INVALID_ADDR)
-						g_debug("run iap - payload %s : invalid address, "
-							"sequence no : "
-							"0x%08X",
-							s2f_file.Tag[i],
-							*(guint32 *)(recvbuf + 1));
-					else if (recvbuf[5] == FIRMWARE_UPDATE_ERROR_NO_OFFER)
-						g_debug("run iap - payload %s : no offer error, "
-							"sequence "
-							"no : 0x%08X",
-							s2f_file.Tag[i],
-							*(guint32 *)(recvbuf + 1));
-					else if (recvbuf[5] == FIRMWARE_UPDATE_ERROR_INVALID)
-						g_debug("run iap - payload %s : invalid error, "
-							"sequence no "
-							": 0x%08X",
-							s2f_file.Tag[i],
-							*(guint32 *)(recvbuf + 1));
-					else
-						g_debug("run iap - payload %s status : 0x%02X, "
-							"sequence no "
-							": 0x%08X",
-							s2f_file.Tag[i],
-							recvbuf[5],
-							*(guint32 *)(recvbuf + 1));
-
-					return FALSE;
-				}
-
-				payload_offset += (payload_header_length + databuf[2]);
-
-				pkg_index++;
-			}
-		} else if (recvbuf[13] == FIRMWARE_UPDATE_OFFER_REJECT) {
-			if (recvbuf[9] == STA_REJECT_OLD_FIRMWARE)
-				g_debug("run iap - offer-%s reject : OLD_FIRMWARE",
-					s2f_file.Tag[i]);
-			else if (recvbuf[9] == STA_REJECT_SWAP_PENDING)
-				g_debug("run iap - offer-%s reject : SWAP_PENDING",
-					s2f_file.Tag[i]);
-			else if (recvbuf[9] == STA_REJECT_WRONG_BANK)
-				g_debug("run iap - offer-%s reject : WRONG_BANK", s2f_file.Tag[i]);
-			else if (recvbuf[9] == STA_REJECT_SIGN_RULE)
-				g_debug("run iap - offer-%s reject : SIGN_RULE", s2f_file.Tag[i]);
-			else if (recvbuf[9] == STA_REJECT_VER_RELEASE_DEBUG)
-				g_debug("run iap - offer-%s reject : VER_RELEASE_DEBUG",
-					s2f_file.Tag[i]);
-			else if (recvbuf[9] == STA_REJECT_DEBUG_SAME_VERSION)
-				g_debug("run iap - offer-%s reject : DEBUG_SAME_VERSION",
-					s2f_file.Tag[i]);
-			else
-				g_debug("run iap - Offer-%s reject : 0x%02X",
-					s2f_file.Tag[i],
-					recvbuf[9]);
-		} else if (recvbuf[13] == FIRMWARE_UPDATE_OFFER_SKIP)
-			g_debug("run iap - offer-%s skip", s2f_file.Tag[i]);
-		else
-			g_debug("run iap - offer-%s status : 0x%02X", s2f_file.Tag[i], recvbuf[13]);
+		g_debug("offer-%s status:%s reject:%s",
+			items[i].tag,
+			fu_elanfp_cfu_device_offer_to_string(recvbuf[13]),
+			fu_elanfp_sta_reject_to_string(recvbuf[9]));
+		if (recvbuf[13] == FU_CFU_DEVICE_OFFER_ACCEPT)
+			break;
 	}
-
+	if (items[i].tag == NULL) {
+		g_set_error_literal(error,
+				    G_IO_ERROR,
+				    G_IO_ERROR_INVALID_DATA,
+				    "no CFU offer was accepted");
+		return FALSE;
+	}
 	fu_progress_step_done(progress);
+
+	/* send payload */
+	payload = fu_firmware_get_image_by_idx_bytes(firmware, items[i].payload_idx, error);
+	if (payload == NULL)
+		return FALSE;
+	if (!fu_elanfp_device_write_payload(self, payload, fu_progress_get_child(progress), error))
+		return FALSE;
+	fu_progress_step_done(progress);
+
+	/* success */
 	return TRUE;
 }
 

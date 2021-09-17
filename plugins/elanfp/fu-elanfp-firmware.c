@@ -17,12 +17,7 @@ struct _FuElanfpFirmware {
 
 G_DEFINE_TYPE(FuElanfpFirmware, fu_elanfp_firmware, FU_TYPE_FIRMWARE)
 
-#define S2F_TAG_FIRMWAREVERSION 0x00
-#define S2F_TAG_CFU_OFFER_A	0x72
-#define S2F_TAG_CFU_OFFER_B	0x73
-#define S2F_TAG_CFU_PAYLOAD_A	0x74
-#define S2F_TAG_CFU_PAYLOAD_B	0x75
-#define S2F_TAG_END_OF_INDEX	0xFF
+#define FU_ELANTP_FIRMWARE_IDX_END 0xFF
 
 static void
 fu_elanfp_firmware_export(FuFirmware *firmware, FuFirmwareExportFlags flags, XbBuilderNode *bn)
@@ -115,32 +110,11 @@ fu_elanfp_firmware_parse(FuFirmware *firmware,
 		if (blob == NULL)
 			return FALSE;
 		fu_firmware_set_bytes(img, blob);
+		fu_firmware_add_image(firmware, img);
 
-		/* add known image types */
-		switch (fwtype) {
-		case S2F_TAG_CFU_OFFER_A:
-			fu_firmware_set_id(img, FW_SET_ID_OFFER_A);
-			fu_firmware_add_image(firmware, img);
+		/* done */
+		if (fwtype == FU_ELANTP_FIRMWARE_IDX_END)
 			break;
-		case S2F_TAG_CFU_OFFER_B:
-			fu_firmware_set_id(img, FW_SET_ID_OFFER_B);
-			fu_firmware_add_image(firmware, img);
-			break;
-		case S2F_TAG_CFU_PAYLOAD_A:
-			fu_firmware_set_id(img, FW_SET_ID_PAYLOAD_A);
-			fu_firmware_add_image(firmware, img);
-			break;
-		case S2F_TAG_CFU_PAYLOAD_B:
-			fu_firmware_set_id(img, FW_SET_ID_PAYLOAD_B);
-			fu_firmware_add_image(firmware, img);
-			break;
-		case S2F_TAG_END_OF_INDEX:
-			return TRUE;
-			break;
-		default:
-			/* just ignore unknown types */
-			break;
-		}
 
 		offset += 0x10;
 	}
@@ -175,7 +149,7 @@ fu_elanfp_firmware_write(FuFirmware *firmware, GError **error)
 	}
 
 	/* end of index */
-	fu_byte_array_append_uint32(buf, S2F_TAG_END_OF_INDEX, G_LITTLE_ENDIAN);
+	fu_byte_array_append_uint32(buf, FU_ELANTP_FIRMWARE_IDX_END, G_LITTLE_ENDIAN);
 	fu_byte_array_append_uint32(buf, 0x0, G_LITTLE_ENDIAN); /* reserved */
 	fu_byte_array_append_uint32(buf, 0x0, G_LITTLE_ENDIAN); /* assumed */
 	fu_byte_array_append_uint32(buf, 0x0, G_LITTLE_ENDIAN); /* assumed */
