@@ -6,8 +6,8 @@
 
 #include "config.h"
 
+#include "fu-elanfp-device.h"
 #include "fu-elanfp-file-control.h"
-#include "fu-elanfp-usb-device.h"
 
 #define ELAN_EP_CMD_OUT	     (0x01 | 0x00)
 #define ELAN_EP_CMD_IN	     (0x02 | 0x80)
@@ -54,13 +54,13 @@
 #define REQTYPE_GET_VERSION 0xC1
 #define REQTYPE_COMMAND	    0x41
 
-struct _FuElanfpUsbDevice {
+struct _FuElanfpDevice {
 	FuUsbDevice parent_instance;
 };
 
-G_DEFINE_TYPE(FuElanfpUsbDevice, fu_elanfp_usb_device, FU_TYPE_USB_DEVICE)
+G_DEFINE_TYPE(FuElanfpDevice, fu_elanfp_device, FU_TYPE_USB_DEVICE)
 
-gboolean
+static gboolean
 iap_send_command(GUsbDevice *usb_device,
 		 guint8 reqType,
 		 guint8 request,
@@ -111,7 +111,7 @@ iap_send_command(GUsbDevice *usb_device,
 	return TRUE;
 }
 
-gboolean
+static gboolean
 iap_recv_status(GUsbDevice *usb_device, guint8 *pbuff, gsize len, GError **error)
 {
 	gsize actual = 0;
@@ -152,8 +152,8 @@ iap_recv_status(GUsbDevice *usb_device, guint8 *pbuff, gsize len, GError **error
 	return TRUE;
 }
 
-gboolean
-run_iap_process(FuElanfpUsbDevice *self, FuFirmware *firmware, FuProgress *progress, GError **error)
+static gboolean
+run_iap_process(FuElanfpDevice *self, FuFirmware *firmware, FuProgress *progress, GError **error)
 {
 	S2F_FILE s2f_file;
 	PAYLOAD_HEADER *ppayload_header = NULL;
@@ -423,12 +423,12 @@ run_iap_process(FuElanfpUsbDevice *self, FuFirmware *firmware, FuProgress *progr
 }
 
 static gboolean
-fu_elanfp_usb_device_open(FuDevice *device, GError **error)
+fu_elanfp_device_open(FuDevice *device, GError **error)
 {
 	GUsbDevice *usb_device = fu_usb_device_get_dev(FU_USB_DEVICE(device));
 
 	/* FuUsbDevice->open */
-	if (!FU_DEVICE_CLASS(fu_elanfp_usb_device_parent_class)->open(device, error))
+	if (!FU_DEVICE_CLASS(fu_elanfp_device_parent_class)->open(device, error))
 		return FALSE;
 
 	if (!g_usb_device_claim_interface(usb_device,
@@ -444,7 +444,7 @@ fu_elanfp_usb_device_open(FuDevice *device, GError **error)
 }
 
 static gboolean
-fu_elanfp_usb_device_close(FuDevice *device, GError **error)
+fu_elanfp_device_close(FuDevice *device, GError **error)
 {
 	GUsbDevice *usb_device = fu_usb_device_get_dev(FU_USB_DEVICE(device));
 
@@ -457,18 +457,18 @@ fu_elanfp_usb_device_close(FuDevice *device, GError **error)
 	}
 
 	/* FuUsbDevice->close */
-	return FU_DEVICE_CLASS(fu_elanfp_usb_device_parent_class)->close(device, error);
+	return FU_DEVICE_CLASS(fu_elanfp_device_parent_class)->close(device, error);
 }
 
 static gboolean
-fu_elanfp_usb_device_do_xfer(FuElanfpUsbDevice *self,
-			     guint8 *outbuf,
-			     gsize outlen,
-			     guint8 *inbuf,
-			     gsize inlen,
-			     gboolean allow_less,
-			     gsize *rxed_count,
-			     GError **error)
+fu_elanfp_device_do_xfer(FuElanfpDevice *self,
+			 guint8 *outbuf,
+			 gsize outlen,
+			 guint8 *inbuf,
+			 gsize inlen,
+			 gboolean allow_less,
+			 gsize *rxed_count,
+			 GError **error)
 {
 	GUsbDevice *usb_device = fu_usb_device_get_dev(FU_USB_DEVICE(self));
 	gsize actual = 0;
@@ -527,22 +527,22 @@ fu_elanfp_usb_device_do_xfer(FuElanfpUsbDevice *self,
 }
 
 static gboolean
-fu_elanfp_usb_device_setup(FuDevice *device, GError **error)
+fu_elanfp_device_setup(FuDevice *device, GError **error)
 {
-	FuElanfpUsbDevice *self = FU_ELANFP_USB_DEVICE(device);
+	FuElanfpDevice *self = FU_ELANFP_DEVICE(device);
 	const gchar *fw_ver_str = NULL;
 	guint16 fw_ver;
 	guint8 usb_buf[2] = {0x40, 0x19};
 	gsize actual_len = 0;
 
-	if (!fu_elanfp_usb_device_do_xfer(self,
-					  (guint8 *)&usb_buf,
-					  sizeof(usb_buf),
-					  usb_buf,
-					  sizeof(usb_buf),
-					  TRUE,
-					  &actual_len,
-					  error)) {
+	if (!fu_elanfp_device_do_xfer(self,
+				      (guint8 *)&usb_buf,
+				      sizeof(usb_buf),
+				      usb_buf,
+				      sizeof(usb_buf),
+				      TRUE,
+				      &actual_len,
+				      error)) {
 		g_prefix_error(error, "failed to device setup: ");
 		return FALSE;
 	}
@@ -560,13 +560,13 @@ fu_elanfp_usb_device_setup(FuDevice *device, GError **error)
 }
 
 static gboolean
-fu_elanfp_usb_device_write_firmware(FuDevice *device,
-				    FuFirmware *firmware,
-				    FuProgress *progress,
-				    FwupdInstallFlags flags,
-				    GError **error)
+fu_elanfp_device_write_firmware(FuDevice *device,
+				FuFirmware *firmware,
+				FuProgress *progress,
+				FwupdInstallFlags flags,
+				GError **error)
 {
-	FuElanfpUsbDevice *self = FU_ELANFP_USB_DEVICE(device);
+	FuElanfpDevice *self = FU_ELANFP_DEVICE(device);
 
 	if (!run_iap_process(self, firmware, progress, error)) {
 		g_prefix_error(error, "device write firmware - iap fail: ");
@@ -579,9 +579,9 @@ fu_elanfp_usb_device_write_firmware(FuDevice *device,
 }
 
 static void
-fu_elanfp_usb_device_init(FuElanfpUsbDevice *device)
+fu_elanfp_device_init(FuElanfpDevice *device)
 {
-	FuElanfpUsbDevice *self = FU_ELANFP_USB_DEVICE(device);
+	FuElanfpDevice *self = FU_ELANFP_DEVICE(device);
 
 	fu_device_add_flag(FU_DEVICE(self), FWUPD_DEVICE_FLAG_UPDATABLE);
 	fu_device_add_flag(FU_DEVICE(self), FWUPD_DEVICE_FLAG_SELF_RECOVERY);
@@ -598,7 +598,7 @@ fu_elanfp_usb_device_init(FuElanfpUsbDevice *device)
 }
 
 static void
-fu_elanfp_usb_device_set_progress(FuDevice *self, FuProgress *progress)
+fu_elanfp_device_set_progress(FuDevice *self, FuProgress *progress)
 {
 	fu_progress_set_id(progress, G_STRLOC);
 	fu_progress_add_step(progress, FWUPD_STATUS_DEVICE_RESTART, 0); /* detach */
@@ -608,12 +608,12 @@ fu_elanfp_usb_device_set_progress(FuDevice *self, FuProgress *progress)
 }
 
 static void
-fu_elanfp_usb_device_class_init(FuElanfpUsbDeviceClass *klass)
+fu_elanfp_device_class_init(FuElanfpDeviceClass *klass)
 {
 	FuDeviceClass *klass_device = FU_DEVICE_CLASS(klass);
-	klass_device->setup = fu_elanfp_usb_device_setup;
-	klass_device->write_firmware = fu_elanfp_usb_device_write_firmware;
-	klass_device->open = fu_elanfp_usb_device_open;
-	klass_device->close = fu_elanfp_usb_device_close;
-	klass_device->set_progress = fu_elanfp_usb_device_set_progress;
+	klass_device->setup = fu_elanfp_device_setup;
+	klass_device->write_firmware = fu_elanfp_device_write_firmware;
+	klass_device->open = fu_elanfp_device_open;
+	klass_device->close = fu_elanfp_device_close;
+	klass_device->set_progress = fu_elanfp_device_set_progress;
 }

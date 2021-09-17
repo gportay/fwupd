@@ -8,7 +8,7 @@ shared_module('fu_plugin_elanfp',
   fu_hash,
   sources : [
     'fu-plugin-elanfp.c',
-    'fu-elanfp-usb-device.c',
+    'fu-elanfp-device.c',
     'fu-elanfp-file-control.c'
   ],
   include_directories : [
