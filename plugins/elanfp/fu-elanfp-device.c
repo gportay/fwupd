@@ -420,7 +420,7 @@ fu_elanfp_device_write_firmware(FuDevice *device,
 		g_debug("offer-%s status:%s reject:%s",
 			items[i].tag,
 			fu_elanfp_cfu_device_offer_to_string(recvbuf[13]),
-			fu_elanfp_sta_reject_to_string(recvbuf[9]));
+			fu_elanfp_cfu_device_reject_to_string(recvbuf[9]));
 		if (recvbuf[13] == FU_CFU_DEVICE_OFFER_ACCEPT)
 			break;
 	}

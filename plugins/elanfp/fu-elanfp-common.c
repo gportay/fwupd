@@ -9,19 +9,21 @@
 #include "fu-elanfp-common.h"
 
 const gchar *
-fu_elanfp_sta_reject_to_string(guint8 val)
+fu_elanfp_cfu_device_reject_to_string(guint8 val)
 {
-	if (val == STA_REJECT_OLD_FIRMWARE)
+	if (val == FU_CFU_DEVICE_REJECT_OLD_FIRMWARE)
 		return "old-firmware";
-	if (val == STA_REJECT_SWAP_PENDING)
+	if (val == FU_CFU_DEVICE_REJECT_INV_COMPONENT)
+		return "inv-component";
+	if (val == FU_CFU_DEVICE_REJECT_SWAP_PENDING)
 		return "swap-pending";
-	if (val == STA_REJECT_WRONG_BANK)
+	if (val == FU_CFU_DEVICE_REJECT_WRONG_BANK)
 		return "wrong-bank";
-	if (val == STA_REJECT_SIGN_RULE)
+	if (val == FU_CFU_DEVICE_REJECT_SIGN_RULE)
 		return "sign-rule";
-	if (val == STA_REJECT_VER_RELEASE_DEBUG)
+	if (val == FU_CFU_DEVICE_REJECT_VER_RELEASE_DEBUG)
 		return "ver-release-debug";
-	if (val == STA_REJECT_DEBUG_SAME_VERSION)
+	if (val == FU_CFU_DEVICE_REJECT_DEBUG_SAME_VERSION)
 		return "debug-same-version";
 	return "unknown";
 }

@@ -31,15 +31,16 @@
 #define FU_CFU_DEVICE_STATUS_ERROR_NO_OFFER	0x0A
 #define FU_CFU_DEVICE_STATUS_ERROR_INVALID	0x0B
 
-#define STA_REJECT_OLD_FIRMWARE	      0x00
-#define STA_REJECT_SWAP_PENDING	      0x02
-#define STA_REJECT_WRONG_BANK	      0x04
-#define STA_REJECT_SIGN_RULE	      0xE0
-#define STA_REJECT_VER_RELEASE_DEBUG  0xE1
-#define STA_REJECT_DEBUG_SAME_VERSION 0xE2
+#define FU_CFU_DEVICE_REJECT_OLD_FIRMWARE	0x00
+#define FU_CFU_DEVICE_REJECT_INV_COMPONENT	0x01
+#define FU_CFU_DEVICE_REJECT_SWAP_PENDING	0x02
+#define FU_CFU_DEVICE_REJECT_WRONG_BANK		0x04
+#define FU_CFU_DEVICE_REJECT_SIGN_RULE		0xE0
+#define FU_CFU_DEVICE_REJECT_VER_RELEASE_DEBUG	0xE1
+#define FU_CFU_DEVICE_REJECT_DEBUG_SAME_VERSION 0xE2
 
 const gchar *
-fu_elanfp_sta_reject_to_string(guint8 val);
+fu_elanfp_cfu_device_reject_to_string(guint8 val);
 const gchar *
 fu_elanfp_cfu_device_status_to_string(guint8 val);
 const gchar *
