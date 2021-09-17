@@ -9,7 +9,7 @@ shared_module('fu_plugin_elanfp',
   sources : [
     'fu-plugin-elanfp.c',
     'fu-elanfp-device.c',
-    'fu-elanfp-file-control.c'
+    'fu-elanfp-firmware.c'  # fuzzing
   ],
   include_directories : [
     root_incdir,

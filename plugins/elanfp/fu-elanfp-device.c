@@ -7,7 +7,7 @@
 #include "config.h"
 
 #include "fu-elanfp-device.h"
-#include "fu-elanfp-file-control.h"
+#include "fu-elanfp-firmware.h"
 
 #define ELAN_EP_CMD_OUT	     (0x01 | 0x00)
 #define ELAN_EP_CMD_IN	     (0x02 | 0x80)
@@ -59,6 +59,18 @@ struct _FuElanfpDevice {
 };
 
 G_DEFINE_TYPE(FuElanfpDevice, fu_elanfp_device, FU_TYPE_USB_DEVICE)
+
+static FuFirmware *
+fu_elanfp_device_prepare_firmware(FuDevice *device,
+				  GBytes *fw,
+				  FwupdInstallFlags flags,
+				  GError **error)
+{
+	g_autoptr(FuFirmware) firmware = fu_elanfp_firmware_new();
+	if (!fu_firmware_parse(firmware, fw, flags, error))
+		return NULL;
+	return g_steal_pointer(&firmware);
+}
 
 static gboolean
 iap_send_command(GUsbDevice *usb_device,
@@ -153,8 +165,150 @@ iap_recv_status(GUsbDevice *usb_device, guint8 *pbuff, gsize len, GError **error
 }
 
 static gboolean
-run_iap_process(FuElanfpDevice *self, FuFirmware *firmware, FuProgress *progress, GError **error)
+fu_elanfp_device_open(FuDevice *device, GError **error)
 {
+	GUsbDevice *usb_device = fu_usb_device_get_dev(FU_USB_DEVICE(device));
+
+	/* FuUsbDevice->open */
+	if (!FU_DEVICE_CLASS(fu_elanfp_device_parent_class)->open(device, error))
+		return FALSE;
+
+	if (!g_usb_device_claim_interface(usb_device,
+					  ELANFP_USB_INTERFACE,
+					  G_USB_DEVICE_CLAIM_INTERFACE_BIND_KERNEL_DRIVER,
+					  error)) {
+		g_prefix_error(error, "failed to claim interface: ");
+		return FALSE;
+	}
+
+	/* success */
+	return TRUE;
+}
+
+static gboolean
+fu_elanfp_device_close(FuDevice *device, GError **error)
+{
+	GUsbDevice *usb_device = fu_usb_device_get_dev(FU_USB_DEVICE(device));
+
+	if (!g_usb_device_release_interface(usb_device,
+					    ELANFP_USB_INTERFACE,
+					    G_USB_DEVICE_CLAIM_INTERFACE_BIND_KERNEL_DRIVER,
+					    error)) {
+		g_prefix_error(error, "failed to release interface: ");
+		return FALSE;
+	}
+
+	/* FuUsbDevice->close */
+	return FU_DEVICE_CLASS(fu_elanfp_device_parent_class)->close(device, error);
+}
+
+static gboolean
+fu_elanfp_device_do_xfer(FuElanfpDevice *self,
+			 guint8 *outbuf,
+			 gsize outlen,
+			 guint8 *inbuf,
+			 gsize inlen,
+			 gboolean allow_less,
+			 gsize *rxed_count,
+			 GError **error)
+{
+	GUsbDevice *usb_device = fu_usb_device_get_dev(FU_USB_DEVICE(self));
+	gsize actual = 0;
+
+	/* send data out */
+	if (outbuf != NULL && outlen > 0) {
+		if (!g_usb_device_bulk_transfer(usb_device,
+						ELAN_EP_CMD_OUT,
+						outbuf,
+						outlen,
+						&actual,
+						BULK_SEND_TIMEOUT_MS,
+						NULL,
+						error)) {
+			return FALSE;
+		}
+		if (actual != outlen) {
+			g_set_error(error,
+				    G_IO_ERROR,
+				    G_IO_ERROR_PARTIAL_INPUT,
+				    "only sent %" G_GSIZE_FORMAT "/%" G_GSIZE_FORMAT " bytes",
+				    actual,
+				    outlen);
+			return FALSE;
+		}
+	}
+
+	/* read reply back */
+	if (inbuf != NULL && inlen > 0) {
+		actual = 0;
+		if (!g_usb_device_bulk_transfer(usb_device,
+						ELAN_EP_IMG_IN,
+						inbuf,
+						inlen,
+						&actual,
+						BULK_RECV_TIMEOUT_MS,
+						NULL,
+						error)) {
+			return FALSE;
+		}
+		if (actual != inlen && !allow_less) {
+			g_set_error(error,
+				    G_IO_ERROR,
+				    G_IO_ERROR_PARTIAL_INPUT,
+				    "only received %" G_GSIZE_FORMAT "/%" G_GSIZE_FORMAT " bytes",
+				    actual,
+				    outlen);
+			return FALSE;
+		}
+	}
+
+	if (rxed_count != NULL)
+		*rxed_count = actual;
+
+	return TRUE;
+}
+
+static gboolean
+fu_elanfp_device_setup(FuDevice *device, GError **error)
+{
+	FuElanfpDevice *self = FU_ELANFP_DEVICE(device);
+	const gchar *fw_ver_str = NULL;
+	guint16 fw_ver;
+	guint8 usb_buf[2] = {0x40, 0x19};
+	gsize actual_len = 0;
+
+	if (!fu_elanfp_device_do_xfer(self,
+				      (guint8 *)&usb_buf,
+				      sizeof(usb_buf),
+				      usb_buf,
+				      sizeof(usb_buf),
+				      TRUE,
+				      &actual_len,
+				      error)) {
+		g_prefix_error(error, "failed to device setup: ");
+		return FALSE;
+	}
+
+	fw_ver = fu_common_read_uint16(usb_buf, G_BIG_ENDIAN);
+
+	fw_ver_str = g_strdup_printf("%04x", fw_ver);
+
+	g_debug("fw version %04x", fw_ver);
+
+	fu_device_set_version(device, fw_ver_str);
+
+	/* success */
+	return TRUE;
+}
+
+static gboolean
+fu_elanfp_device_write_firmware(FuDevice *device,
+				FuFirmware *firmware,
+				FuProgress *progress,
+				FwupdInstallFlags flags,
+				GError **error)
+{
+	FuElanfpDevice *self = FU_ELANFP_DEVICE(device);
 	S2F_FILE s2f_file;
 	PAYLOAD_HEADER *ppayload_header = NULL;
 	guint8 databuf[61] = {0};
@@ -163,31 +317,30 @@ run_iap_process(FuElanfpDevice *self, FuFirmware *firmware, FuProgress *progress
 	guint16 pkg_index = 0;
 	guint32 payload_offset = 0;
 	GUsbDevice *usb_device = fu_usb_device_get_dev(FU_USB_DEVICE(self));
-
 	g_autoptr(GBytes) fw = NULL;
 	g_autoptr(GBytes) fw_offer_a = NULL;
 	g_autoptr(GBytes) fw_offer_b = NULL;
 	g_autoptr(GBytes) fw_payload_a = NULL;
 	g_autoptr(GBytes) fw_payload_b = NULL;
-
 	g_autoptr(GPtrArray) chunks = NULL;
-
-	g_return_val_if_fail(firmware != NULL, FALSE);
 
 	/* progress */
 	fu_progress_set_id(progress, G_STRLOC);
 	fu_progress_add_flag(progress, FU_PROGRESS_FLAG_GUESSED);
 	fu_progress_add_step(progress, FWUPD_STATUS_DEVICE_WRITE, 100);
 
-	if (!fU_elanfp_file_ctrl_binary_verify(firmware, error)) {
-		g_prefix_error(error, "run iap process - binary verify fail: ");
-		return FALSE;
-	}
-
 	fw_offer_a = fu_firmware_get_image_by_id_bytes(firmware, FW_SET_ID_OFFER_A, error);
+	if (fw_offer_a == NULL)
+		return FALSE;
 	fw_offer_b = fu_firmware_get_image_by_id_bytes(firmware, FW_SET_ID_OFFER_B, error);
+	if (fw_offer_b == NULL)
+		return FALSE;
 	fw_payload_a = fu_firmware_get_image_by_id_bytes(firmware, FW_SET_ID_PAYLOAD_A, error);
+	if (fw_payload_a == NULL)
+		return FALSE;
 	fw_payload_b = fu_firmware_get_image_by_id_bytes(firmware, FW_SET_ID_PAYLOAD_B, error);
+	if (fw_payload_b == NULL)
+		return FALSE;
 
 	s2f_file.pOffer[0] = g_bytes_get_data(fw_offer_a, &s2f_file.OfferLength[0]);
 	s2f_file.pOffer[1] = g_bytes_get_data(fw_offer_b, &s2f_file.OfferLength[1]);
@@ -199,8 +352,8 @@ run_iap_process(FuElanfpDevice *self, FuFirmware *firmware, FuProgress *progress
 	s2f_file.Tag[1][0] = 0x42;
 	s2f_file.Tag[1][1] = 0x00;
 
-	/* Send Offer */
-	for (int i = 0; i < 2; i++) {
+	/* send offer */
+	for (guint i = 0; i < 2; i++) {
 		memset(databuf, 0x00, sizeof(databuf));
 		memset(recvbuf, 0x00, sizeof(recvbuf));
 		databuf[0] = REPORT_ID_OFFER_COMMAND;
@@ -418,163 +571,6 @@ run_iap_process(FuElanfpDevice *self, FuFirmware *firmware, FuProgress *progress
 	}
 
 	fu_progress_step_done(progress);
-
-	return TRUE;
-}
-
-static gboolean
-fu_elanfp_device_open(FuDevice *device, GError **error)
-{
-	GUsbDevice *usb_device = fu_usb_device_get_dev(FU_USB_DEVICE(device));
-
-	/* FuUsbDevice->open */
-	if (!FU_DEVICE_CLASS(fu_elanfp_device_parent_class)->open(device, error))
-		return FALSE;
-
-	if (!g_usb_device_claim_interface(usb_device,
-					  ELANFP_USB_INTERFACE,
-					  G_USB_DEVICE_CLAIM_INTERFACE_BIND_KERNEL_DRIVER,
-					  error)) {
-		g_prefix_error(error, "failed to claim interface: ");
-		return FALSE;
-	}
-
-	/* success */
-	return TRUE;
-}
-
-static gboolean
-fu_elanfp_device_close(FuDevice *device, GError **error)
-{
-	GUsbDevice *usb_device = fu_usb_device_get_dev(FU_USB_DEVICE(device));
-
-	if (!g_usb_device_release_interface(usb_device,
-					    ELANFP_USB_INTERFACE,
-					    G_USB_DEVICE_CLAIM_INTERFACE_BIND_KERNEL_DRIVER,
-					    error)) {
-		g_prefix_error(error, "failed to release interface: ");
-		return FALSE;
-	}
-
-	/* FuUsbDevice->close */
-	return FU_DEVICE_CLASS(fu_elanfp_device_parent_class)->close(device, error);
-}
-
-static gboolean
-fu_elanfp_device_do_xfer(FuElanfpDevice *self,
-			 guint8 *outbuf,
-			 gsize outlen,
-			 guint8 *inbuf,
-			 gsize inlen,
-			 gboolean allow_less,
-			 gsize *rxed_count,
-			 GError **error)
-{
-	GUsbDevice *usb_device = fu_usb_device_get_dev(FU_USB_DEVICE(self));
-	gsize actual = 0;
-
-	/* send data out */
-	if (outbuf != NULL && outlen > 0) {
-		if (!g_usb_device_bulk_transfer(usb_device,
-						ELAN_EP_CMD_OUT,
-						outbuf,
-						outlen,
-						&actual,
-						BULK_SEND_TIMEOUT_MS,
-						NULL,
-						error)) {
-			return FALSE;
-		}
-		if (actual != outlen) {
-			g_set_error(error,
-				    G_IO_ERROR,
-				    G_IO_ERROR_PARTIAL_INPUT,
-				    "only sent %" G_GSIZE_FORMAT "/%" G_GSIZE_FORMAT " bytes",
-				    actual,
-				    outlen);
-			return FALSE;
-		}
-	}
-
-	/* read reply back */
-	if (inbuf != NULL && inlen > 0) {
-		actual = 0;
-		if (!g_usb_device_bulk_transfer(usb_device,
-						ELAN_EP_IMG_IN,
-						inbuf,
-						inlen,
-						&actual,
-						BULK_RECV_TIMEOUT_MS,
-						NULL,
-						error)) {
-			return FALSE;
-		}
-		if (actual != inlen && !allow_less) {
-			g_set_error(error,
-				    G_IO_ERROR,
-				    G_IO_ERROR_PARTIAL_INPUT,
-				    "only received %" G_GSIZE_FORMAT "/%" G_GSIZE_FORMAT " bytes",
-				    actual,
-				    outlen);
-			return FALSE;
-		}
-	}
-
-	if (rxed_count != NULL)
-		*rxed_count = actual;
-
-	return TRUE;
-}
-
-static gboolean
-fu_elanfp_device_setup(FuDevice *device, GError **error)
-{
-	FuElanfpDevice *self = FU_ELANFP_DEVICE(device);
-	const gchar *fw_ver_str = NULL;
-	guint16 fw_ver;
-	guint8 usb_buf[2] = {0x40, 0x19};
-	gsize actual_len = 0;
-
-	if (!fu_elanfp_device_do_xfer(self,
-				      (guint8 *)&usb_buf,
-				      sizeof(usb_buf),
-				      usb_buf,
-				      sizeof(usb_buf),
-				      TRUE,
-				      &actual_len,
-				      error)) {
-		g_prefix_error(error, "failed to device setup: ");
-		return FALSE;
-	}
-
-	fw_ver = fu_common_read_uint16(usb_buf, G_BIG_ENDIAN);
-
-	fw_ver_str = g_strdup_printf("%04x", fw_ver);
-
-	g_debug("fw version %04x", fw_ver);
-
-	fu_device_set_version(device, fw_ver_str);
-
-	/* success */
-	return TRUE;
-}
-
-static gboolean
-fu_elanfp_device_write_firmware(FuDevice *device,
-				FuFirmware *firmware,
-				FuProgress *progress,
-				FwupdInstallFlags flags,
-				GError **error)
-{
-	FuElanfpDevice *self = FU_ELANFP_DEVICE(device);
-
-	if (!run_iap_process(self, firmware, progress, error)) {
-		g_prefix_error(error, "device write firmware - iap fail: ");
-		return FALSE;
-	}
-
-	g_debug("device write firmware - iap success !!");
-
 	return TRUE;
 }
 
@@ -591,7 +587,7 @@ fu_elanfp_device_init(FuElanfpDevice *device)
 	fu_device_add_protocol(FU_DEVICE(self), "tw.com.emc.elanfp");
 	fu_device_set_name(FU_DEVICE(self), "Fingerprint Sensor");
 	fu_device_set_summary(FU_DEVICE(self), "Match-On-Chip Fingerprint Sensor");
-	fu_device_set_vendor(FU_DEVICE(self), "Elanfp");
+	fu_device_set_vendor(FU_DEVICE(self), "Elan");
 	fu_device_set_install_duration(FU_DEVICE(self), 10);
 	fu_device_set_firmware_size_min(FU_DEVICE(self), 0x20000);
 	fu_device_set_firmware_size_max(FU_DEVICE(self), 0x90000);
@@ -612,6 +608,7 @@ fu_elanfp_device_class_init(FuElanfpDeviceClass *klass)
 {
 	FuDeviceClass *klass_device = FU_DEVICE_CLASS(klass);
 	klass_device->setup = fu_elanfp_device_setup;
+	klass_device->prepare_firmware = fu_elanfp_device_prepare_firmware;
 	klass_device->write_firmware = fu_elanfp_device_write_firmware;
 	klass_device->open = fu_elanfp_device_open;
 	klass_device->close = fu_elanfp_device_close;

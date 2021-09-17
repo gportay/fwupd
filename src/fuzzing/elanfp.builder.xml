@@ -1,0 +1,23 @@
+<firmware gtype="FuElanfpFirmware">
+  <format_version>0x123</format_version>
+  <firmware>
+    <id>offer_A</id>
+    <idx>0x72</idx>
+    <data>aGVsbG8gd29ybGQ=</data>
+  </firmware>
+  <firmware>
+    <id>offer_B</id>
+    <idx>0x73</idx>
+    <data>aGVsbG8gd29ybGQ=</data>
+  </firmware>
+  <firmware>
+    <id>payload_A</id>
+    <idx>0x74</idx>
+    <data>aGVsbG8gd29ybGQ=</data>
+  </firmware>
+  <firmware>
+    <id>payload_B</id>
+    <idx>0x75</idx>
+    <data>aGVsbG8gd29ybGQ=</data>
+  </firmware>
+</firmware>
